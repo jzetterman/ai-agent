@@ -1,5 +1,8 @@
 import unittest
 from functions.get_files_info import get_files_info
+from functions.get_files_content import get_file_content
+from functions.write_file import write_file
+from functions.run_python import run_python_file
 
 class TestFunctions(unittest.TestCase):
     def test_simple(self):
@@ -24,8 +27,12 @@ class TestFunctions(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    print(get_files_info("calculator", "."))
-    print(get_files_info("calculator", "pkg"))
-    print(get_files_info("calculator", "/bin"))
-    print(get_files_info("calculator", "../"))
+    print(run_python_file("calculator", "main.py"))
+    print('##############################################')
+    print(run_python_file("calculator", "tests.py"))
+    print('##############################################')
+    print(run_python_file("calculator", "../main.py"))
+    print('##############################################')
+    print(run_python_file("calculator", "nonexistent.py"))
+
     unittest.main()
