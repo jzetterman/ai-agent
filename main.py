@@ -3,7 +3,9 @@ import os
 import sys
 from dotenv import load_dotenv
 from google import genai
-from google.genai import types
+from google.genai import types as genai_types
+
+from functions.call_function import call_function
 
 load_dotenv()
 api_key = os.environ.get("GEMINI_API_KEY")
@@ -25,7 +27,7 @@ def main():
         sys.exit(1)
 
     messages = [
-        types.Content(role="user", parts=[types.Part(text=user_prompt)]),
+        genai_types.Content(role="user", parts=[genai_types.Part(text=user_prompt)]),
     ]
 
     client = genai.Client(api_key=api_key)
@@ -35,35 +37,94 @@ def main():
         When a user asks a question or makes a request, make a function call plan. You can perform the following operations:
 
         - List files and directories
+        - Read file contents
+        - Execute Python files with optional arguments
+        - Write or overwrite files
 
         All paths you provide should be relative to the working directory. You do not need to specify the working directory in your function calls as it is automatically injected for security reasons.
         """
-    schema_get_files_info = types.FunctionDeclaration(
+    schema_get_files_info = genai_types.FunctionDeclaration(
         name="get_files_info",
         description="Lists files in the specified directory along with their sizes, constrained to the working directory.",
-        parameters=types.Schema(
-            type=types.Type.OBJECT,
+        parameters=genai_types.Schema(
+            type=genai_types.Type.OBJECT,
             properties={
-                "directory": types.Schema(
-                    type=types.Type.STRING,
+                "directory": genai_types.Schema(
+                    type=genai_types.Type.STRING,
                     description="The directory to list files from, relative to the working directory. If not provided, lists files in the working directory itself.",
                 ),
             },
         ),
     )
-    available_functions = types.Tool(
+    schema_get_file_content = genai_types.FunctionDeclaration(
+        name="get_file_content",
+        description="Get the content of a specified file.",
+        parameters=genai_types.Schema(
+            type=genai_types.Type.OBJECT,
+            properties={
+                "file_path": genai_types.Schema(
+                    type=genai_types.Type.STRING,
+                    description="Get the content of a specified file.",
+                ),
+            },
+        ),
+    )
+    schema_run_python_file = genai_types.FunctionDeclaration(
+        name="run_python_file",
+        description="Run a specified python file.",
+        parameters=genai_types.Schema(
+            type=genai_types.Type.OBJECT,
+            properties={
+                "file_path": genai_types.Schema(
+                    type=genai_types.Type.STRING,
+                    description="Run a specified python file.",
+                ),
+            },
+        ),
+    )
+    schema_write_file = genai_types.FunctionDeclaration(
+        name="write_file",
+        description="Write to a file.",
+        parameters=genai_types.Schema(
+            type=genai_types.Type.OBJECT,
+            properties={
+                "file_path": genai_types.Schema(
+                    type=genai_types.Type.STRING,
+                    description="The file name and location for the file to be written.",
+                ),
+                "content": genai_types.Schema(
+                    type=genai_types.Type.STRING,
+                    description="The content to be written into the file.",
+                )
+            },
+        ),
+    )
+
+    available_functions = genai_types.Tool(
         function_declarations=[
             schema_get_files_info,
+            schema_get_file_content,
+            schema_run_python_file,
+            schema_write_file,
         ]
     )
+
     model_response = client.models.generate_content(
         model="gemini-2.0-flash-001",
         contents=messages,
-        config=types.GenerateContentConfig(
+        config=genai_types.GenerateContentConfig(
             tools=[available_functions],
             system_instruction=system_prompt
         )
     )
+
+    function_call_part = model_response.candidates[0].content.parts[0].function_call
+    function_result = call_function(function_call_part, verbose=args.verbose)
+
+    if function_result.parts[0].function_response.response == "":
+        raise Exception(f'Fatal exception: failed to run function')
+    if function_result.parts[0].function_response.response != "" and args.verbose:
+        print(f"-> {function_result.parts[0].function_response.response}")
     
     if args.verbose:
         print(f"User prompt: {args.prompt}")
