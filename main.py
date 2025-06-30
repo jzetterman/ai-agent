@@ -41,7 +41,9 @@ def main():
         - Execute Python files with optional arguments
         - Write or overwrite files
 
-        All paths you provide should be relative to the working directory. You do not need to specify the working directory in your function calls as it is automatically injected for security reasons.
+        Start by exploring the directory structure to understand the codebase. All paths you provide should be relative to the 
+        working directory. You do not need to specify the working directory in your function calls as it is automatically injected 
+        for security reasons.
         """
     schema_get_files_info = genai_types.FunctionDeclaration(
         name="get_files_info",
@@ -109,34 +111,46 @@ def main():
         ]
     )
 
-    model_response = client.models.generate_content(
-        model="gemini-2.0-flash-001",
-        contents=messages,
-        config=genai_types.GenerateContentConfig(
-            tools=[available_functions],
-            system_instruction=system_prompt
+    for i in range(20):
+        model_response = client.models.generate_content(
+            model="gemini-2.0-flash-001",
+            contents=messages,
+            config=genai_types.GenerateContentConfig(
+                tools=[available_functions],
+                system_instruction=system_prompt
+            )
         )
-    )
 
-    function_call_part = model_response.candidates[0].content.parts[0].function_call
-    function_result = call_function(function_call_part, verbose=args.verbose)
+        for candidate in model_response.candidates:
+            messages.append(candidate.content)
 
-    if function_result.parts[0].function_response.response == "":
-        raise Exception(f'Fatal exception: failed to run function')
-    if function_result.parts[0].function_response.response != "" and args.verbose:
-        print(f"-> {function_result.parts[0].function_response.response}")
-    
-    if args.verbose:
-        print(f"User prompt: {args.prompt}")
-        print(f"Prompt tokens: {model_response.usage_metadata.prompt_token_count}")
-        print(f"Response tokens: {model_response.usage_metadata.candidates_token_count}")
-    else:
-        function_calls = model_response.function_calls
-        if function_calls and len(function_calls) > 0:
-            for function_call in function_calls:
-                print(f"Calling function: {function_call.name}({function_call.args})")
-        else:
-            print(model_response.text)
+        try:
+            part = model_response.candidates[0].content.parts[0]
+            if hasattr(part, 'function_call') and part.function_call is not None:
+                function_call_part = part.function_call
+                function_result = call_function(function_call_part, verbose=args.verbose)
+                messages.append(function_result)
+
+                if function_result.parts[0].function_response.response == "":
+                    raise Exception(f'Fatal exception: failed to run function')
+                if function_result.parts[0].function_response.response != "" and args.verbose:
+                    print(f"-> {function_result.parts[0].function_response.response}")
+            
+                if args.verbose:
+                    print(f"User prompt: {args.prompt}")
+                    print(f"Prompt tokens: {model_response.usage_metadata.prompt_token_count}")
+                    print(f"Response tokens: {model_response.usage_metadata.candidates_token_count}")
+                else:
+                    function_calls = model_response.function_calls
+                    for function_call in function_calls:
+                        print(f"Calling function: {function_call.name}({function_call.args})")
+
+            else:
+                print(model_response.text)
+                break
+        except Exception as e:
+            raise Exception('Fatal exception')
+            
         
 if __name__ == "__main__":
     main()
