@@ -3,14 +3,14 @@ import os
 import sys
 from dotenv import load_dotenv
 from google import genai
-from google.genai import types as genai_types
+from google.genai import types
 
-from functions.call_function import call_function
-
-load_dotenv()
-api_key = os.environ.get("GEMINI_API_KEY")
+from prompts import system_prompt
+from functions.call_function import call_function, available_functions
+from config import MAX_ITERS
 
 def main():
+    load_dotenv()
     parser = argparse.ArgumentParser()
     prompt_argument_strings = []
     for value in sys.argv[1:]:
@@ -23,134 +23,69 @@ def main():
 
     user_prompt = args.prompt
     if len(sys.argv) < 2:
-        print("No prompt was provided, try again")
+        print("AI Code Assistant")
+        print('\nUsage: python main.py "your prompt here" [--verbose]')
+        print('Example: python main.py "How do I fix the calculator?"')
         sys.exit(1)
 
+    api_key = os.environ.get("GEMINI_API_KEY")
+    client = genai.Client(api_key=api_key)
+
     messages = [
-        genai_types.Content(role="user", parts=[genai_types.Part(text=user_prompt)]),
+        types.Content(role="user", parts=[types.Part(text=user_prompt)]),
     ]
 
-    client = genai.Client(api_key=api_key)
-    system_prompt = """
-        You are a helpful AI coding agent.
+    iterations = 0
+    while True:
+        iterations += 1
+        if iterations > MAX_ITERS:
+            print(f"Maximum iterations ({MAX_ITERS}) reached.")
+            sys.exit(1)
 
-        When a user asks a question or makes a request, make a function call plan. You can perform the following operations:
-
-        - List files and directories
-        - Read file contents
-        - Execute Python files with optional arguments
-        - Write or overwrite files
-
-        Start by exploring the directory structure to understand the codebase. All paths you provide should be relative to the 
-        working directory. You do not need to specify the working directory in your function calls as it is automatically injected 
-        for security reasons.
-        """
-    schema_get_files_info = genai_types.FunctionDeclaration(
-        name="get_files_info",
-        description="Lists files in the specified directory along with their sizes, constrained to the working directory.",
-        parameters=genai_types.Schema(
-            type=genai_types.Type.OBJECT,
-            properties={
-                "directory": genai_types.Schema(
-                    type=genai_types.Type.STRING,
-                    description="The directory to list files from, relative to the working directory. If not provided, lists files in the working directory itself.",
-                ),
-            },
-        ),
-    )
-    schema_get_file_content = genai_types.FunctionDeclaration(
-        name="get_file_content",
-        description="Get the content of a specified file.",
-        parameters=genai_types.Schema(
-            type=genai_types.Type.OBJECT,
-            properties={
-                "file_path": genai_types.Schema(
-                    type=genai_types.Type.STRING,
-                    description="Get the content of a specified file.",
-                ),
-            },
-        ),
-    )
-    schema_run_python_file = genai_types.FunctionDeclaration(
-        name="run_python_file",
-        description="Run a specified python file.",
-        parameters=genai_types.Schema(
-            type=genai_types.Type.OBJECT,
-            properties={
-                "file_path": genai_types.Schema(
-                    type=genai_types.Type.STRING,
-                    description="Run a specified python file.",
-                ),
-            },
-        ),
-    )
-    schema_write_file = genai_types.FunctionDeclaration(
-        name="write_file",
-        description="Write to a file.",
-        parameters=genai_types.Schema(
-            type=genai_types.Type.OBJECT,
-            properties={
-                "file_path": genai_types.Schema(
-                    type=genai_types.Type.STRING,
-                    description="The file name and location for the file to be written.",
-                ),
-                "content": genai_types.Schema(
-                    type=genai_types.Type.STRING,
-                    description="The content to be written into the file.",
-                )
-            },
+        try:
+            final_response = generate_content(client, messages, args.verbose)
+            if final_response:
+                print("Final response:")
+                print(final_response)
+                break
+        except Exception as e:
+            raise Exception(f"Error in generate_content: {e}")
+        
+def generate_content(client, messages, verbose):
+    model_response = client.models.generate_content(
+        model="gemini-2.0-flash-001",
+        contents=messages,
+        config=types.GenerateContentConfig(
+            tools=[available_functions],
+            system_instruction=system_prompt
         ),
     )
 
-    available_functions = genai_types.Tool(
-        function_declarations=[
-            schema_get_files_info,
-            schema_get_file_content,
-            schema_run_python_file,
-            schema_write_file,
-        ]
-    )
+    if verbose:
+        print(f"Prompt tokens: {model_response.usage_metadata.prompt_token_count}")
+        print(f"Response tokens: {model_response.usage_metadata.candidates_token_count}")
 
-    for i in range(20):
-        model_response = client.models.generate_content(
-            model="gemini-2.0-flash-001",
-            contents=messages,
-            config=genai_types.GenerateContentConfig(
-                tools=[available_functions],
-                system_instruction=system_prompt
-            )
-        )
-
+    if model_response.candidates:
         for candidate in model_response.candidates:
             messages.append(candidate.content)
 
-        try:
-            part = model_response.candidates[0].content.parts[0]
-            if hasattr(part, 'function_call') and part.function_call is not None:
-                function_call_part = part.function_call
-                function_result = call_function(function_call_part, verbose=args.verbose)
-                messages.append(function_result)
+    if not model_response.function_calls:
+        return model_response.text
+    
+    function_responses = []
+    for function_call_part in model_response.function_calls:
+        function_call_result = call_function(function_call_part, verbose)
+        if not function_call_result.parts or not function_call_result.parts[0].function_response:
+            raise Exception("empty function call result")
+        
+        if verbose:
+            print(f"-> {function_call_result.parts[0].function_response.response}")
+        function_responses.append(function_call_result.parts[0])
 
-                if function_result.parts[0].function_response.response == "":
-                    raise Exception(f'Fatal exception: failed to run function')
-                if function_result.parts[0].function_response.response != "" and args.verbose:
-                    print(f"-> {function_result.parts[0].function_response.response}")
-            
-                if args.verbose:
-                    print(f"User prompt: {args.prompt}")
-                    print(f"Prompt tokens: {model_response.usage_metadata.prompt_token_count}")
-                    print(f"Response tokens: {model_response.usage_metadata.candidates_token_count}")
-                else:
-                    function_calls = model_response.function_calls
-                    for function_call in function_calls:
-                        print(f"Calling function: {function_call.name}({function_call.args})")
-
-            else:
-                print(model_response.text)
-                break
-        except Exception as e:
-            raise Exception('Fatal exception')
-            
+    if not function_responses:
+        raise Exception("no function responses generated, exiting.")
+    
+    messages.append(types.Content(role="tool", parts=function_responses))
         
 if __name__ == "__main__":
     main()
